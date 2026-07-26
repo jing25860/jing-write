@@ -396,6 +396,15 @@
     -webkit-tap-highlight-color: transparent;
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  /* ===== LOGIN ===== */
+  .login-card { background: var(--bg-modal); border-radius: 16px; padding: 30px 24px; width: 340px; max-width: 90vw; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; gap: 12px; }
+  .login-logo { text-align: center; font-size: 24px; font-weight: 800; color: var(--accent); letter-spacing: 0.05em; }
+  .login-card h3 { text-align: center; margin: 2px 0 10px; font-size: 16px; color: var(--text-secondary); font-weight: 600; }
+  .login-card input { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 13px 14px; font: inherit; font-size: 16px; background: var(--bg-card); color: var(--text-primary); }
+  .login-card input:focus { border-color: var(--accent); outline: none; }
+  .auth-err { color: var(--warn); font-size: 13px; min-height: 18px; text-align: center; }
+  .auth-switch { text-align: center; font-size: 13px; color: var(--accent); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  .user-badge { font-size: 12px; color: var(--text-muted); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .modal {
     background: var(--bg-modal); border-radius: 10px; padding: 24px; width: 500px;
     max-width: 100%; max-height: 85vh; overflow-y: auto;
@@ -548,6 +557,7 @@
     <span class="toggle-icon">&#9788;</span> <span id="theme-label">日间</span>
   </button>
   <button class="theme-toggle" id="btn-backup" title="数据备份与恢复">&#128190; 备份</button>
+  <span class="user-badge" id="user-badge" style="display:none;"></span>
 </nav>
 
 <div class="main-wrap">
@@ -805,30 +815,47 @@
     <button class="btn" id="bk-import" style="width:100%;margin-bottom:10px;">② 从备份文件恢复</button>
     <input type="file" id="bk-file" accept="application/json,.json" style="display:none;">
     <button class="btn" id="bk-close" style="width:100%;">关闭</button>
+    <button class="btn warn" id="bk-logout" style="width:100%;margin-top:6px;">退出登录</button>
   </div>
 </div>
 
 <!-- 轻提示 -->
 <div class="toast" id="toast"></div>
 
+<!-- ===== 登录（数据私有化） ===== -->
+<div class="modal-overlay open" id="login-overlay">
+  <div class="login-card">
+    <div class="login-logo">静 · 写字</div>
+    <h3 id="auth-title">登录「静 · 写字」</h3>
+    <input id="auth-email" type="email" inputmode="email" autocomplete="email" placeholder="邮箱">
+    <input id="auth-pw" type="password" autocomplete="current-password" placeholder="密码（至少 6 位）">
+    <button class="btn primary" id="auth-submit">登录</button>
+    <div id="auth-err" class="auth-err"></div>
+    <a class="auth-switch" id="auth-switch">没有账号？去注册</a>
+  </div>
+</div>
+
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <script>
 // ==== FIREBASE INIT ====
 const firebaseConfig = {
-  apiKey: "AIzaSyBNvS-D8SRGWqsGNVVBojO_3Fw1buuv4Pw",
-  authDomain: "writing-21699.firebaseapp.com",
-  databaseURL: "https://writing-21699-default-rtdb.firebaseio.com",
-  projectId: "writing-21699",
-  storageBucket: "writing-21699.firebasestorage.app",
-  messagingSenderId: "806073751278",
-  appId: "1:806073751278:web:14d7115cb6c1305758c5ff"
+  // TODO: 替换为你的 Firebase 项目 Web 配置（项目设置 → 你的应用 → SDK 配置 / CDN 片段）
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  databaseURL: "https://YOUR_PROJECT-default-rtdb.firebaseio.com",
+  projectId: "YOUR_PROJECT",
+  storageBucket: "YOUR_PROJECT.firebasestorage.app",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
+const auth = firebase.auth();
 
-// ==== SYNC KEY (无需登录，共用同一份数据) ====
-const SYNC_PATH = 'shared';
+// ==== SYNC KEY（登录后按账号隔离：users/<uid>）====
+let SYNC_PATH = 'shared';
 
 // ==== DATA ====
 const STORE = {
@@ -1635,47 +1662,105 @@ $('#mp-btn-outline').addEventListener('click', () => {
   }
 })();
 
-// ==== INIT ====
-// 先从云端拉取数据，再渲染
-pullFromCloud().then(() => {
-  // 章节内容也从云端恢复
-  const cloudChapters = {};
-  STORE.books.forEach(b => {
-    (b.chapters||[]).forEach(ch => {
-      if (!localStorage.getItem('jw-ch-' + ch.id)) {
-        // 尝试从刚才拉取的数据中恢复
-      }
-    });
-  });
-  refreshMaterials(); refreshBooks();
-  if (isMobile()) {
-    updateMobileBar('materials');
-    $('#panel-materials').classList.add('active');
-  } else {
-    $('#panel-materials').classList.add('active');
-  }
-  console.log('静 · 写字 — 云端同步已就绪');
-});
-
-// 每30秒自动拉取一次（其他人/设备的更新）
-setInterval(() => {
+// ==== INIT（登录后才会拉数据）====
+let _appStarted = false;
+function startApp() {
   pullFromCloud().then(() => {
-    if (currentBookId) {
-      renderChapterList();
-    }
-    refreshMaterials();
+    save(); // 确保本地数据已上传到私有库（首次登录/换设备时同步）
+    refreshMaterials(); refreshBooks();
+    $('#panel-materials').classList.add('active');
+    if (isMobile()) updateMobileBar('materials');
+    console.log('静 · 写字 — 云端同步已就绪');
+  }).catch(() => {
+    refreshMaterials(); refreshBooks();
+    $('#panel-materials').classList.add('active');
   });
+}
+
+// 每30秒自动拉取一次（仅登录后）
+setInterval(() => {
+  if (auth.currentUser) {
+    pullFromCloud().then(() => {
+      if (currentBookId) renderChapterList();
+      refreshMaterials();
+    });
+  }
 }, 30000);
 
 // 页面切回前台时拉取
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
+  if (!document.hidden && auth.currentUser) {
     pullFromCloud().then(() => {
       if (currentBookId) renderChapterList();
       refreshMaterials();
     });
   }
 });
+
+// ==== 登录 / 数据私有化 ====
+function showLogin() { const o = $('#login-overlay'); if (o) o.classList.add('open'); }
+function hideLogin() { const o = $('#login-overlay'); if (o) o.classList.remove('open'); }
+let _authMode = 'login';
+function setAuthMode(m) {
+  _authMode = m;
+  $('#auth-title').textContent = m === 'login' ? '登录「静 · 写字」' : '注册「静 · 写字」';
+  $('#auth-submit').textContent = m === 'login' ? '登录' : '注册';
+  $('#auth-switch').textContent = m === 'login' ? '没有账号？去注册' : '已有账号？去登录';
+}
+function authErrorMsg(err) {
+  const c = err && err.code;
+  if (c === 'auth/invalid-email') return '邮箱格式不正确';
+  if (c === 'auth/weak-password') return '密码至少 6 位';
+  if (c === 'auth/user-not-found' || c === 'auth/wrong-password' || c === 'auth/invalid-credential') return '邮箱或密码不正确';
+  if (c === 'auth/email-already-in-use') return '该邮箱已注册，请直接登录';
+  if (c === 'auth/network-request-failed') return '网络异常，请检查网络';
+  if (c === 'auth/too-many-requests') return '尝试次数过多，请稍后再试';
+  return (err && err.message) ? err.message : '出错了，请重试';
+}
+function doAuth() {
+  const email = $('#auth-email').value.trim();
+  const pw = $('#auth-pw').value;
+  if (!email || !pw) { $('#auth-err').textContent = '请输入邮箱和密码'; return; }
+  $('#auth-err').textContent = '';
+  const btn = $('#auth-submit'); btn.disabled = true;
+  const p = _authMode === 'login'
+    ? auth.signInWithEmailAndPassword(email, pw)
+    : auth.createUserWithEmailAndPassword(email, pw);
+  p.then(() => { /* onAuthStateChanged 会接管界面 */ })
+   .catch(err => { $('#auth-err').textContent = authErrorMsg(err); btn.disabled = false; });
+}
+function logout() {
+  auth.signOut().then(() => {
+    ['jw-tags','jw-materials','jw-books','jw-outlines','jw-outline-chars','jw-outline-plot','jw-version'].forEach(k => localStorage.removeItem(k));
+    for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && k.indexOf('jw-ch-') === 0) localStorage.removeItem(k); }
+    location.reload();
+  });
+}
+function updateUserBadge(user) {
+  const el = $('#user-badge');
+  if (!el) return;
+  el.textContent = (user.email || '已登录').split('@')[0];
+  el.style.display = '';
+}
+$('#auth-submit').addEventListener('click', doAuth);
+$('#auth-switch').addEventListener('click', () => setAuthMode(_authMode === 'login' ? 'register' : 'login'));
+$('#auth-email').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
+$('#auth-pw').addEventListener('keydown', e => { if (e.key === 'Enter') doAuth(); });
+$('#bk-logout').addEventListener('click', () => { closeBackupModal(); logout(); });
+
+// 登录状态门控：未登录只显示登录框，数据按账号隔离
+auth.onAuthStateChanged(function(user) {
+  if (user) {
+    SYNC_PATH = 'users/' + user.uid;
+    hideLogin();
+    updateUserBadge(user);
+    if (!_appStarted) { _appStarted = true; startApp(); }
+  } else {
+    SYNC_PATH = 'shared';
+    showLogin();
+  }
+});
+setAuthMode('login');
 </script>
 
 <script>
