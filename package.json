@@ -1,0 +1,13 @@
+{
+  "name": "jing-write",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "静 · 写字（手机版）—— 单页写作/素材应用，GitHub Pages 发布",
+  "scripts": {
+    "backup": "node scripts/backup.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  }
+}
