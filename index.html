@@ -388,6 +388,14 @@
     transition: background 0.3s;
   }
   .modal-overlay.open { display: flex; }
+  .toast {
+    position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%) translateY(6px); background: rgba(15,23,42,.92); color: #fff;
+    padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 500; opacity: 0;
+    pointer-events: none; transition: opacity .25s, transform .25s; max-width: 82vw; text-align: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
   .modal {
     background: var(--bg-modal); border-radius: 10px; padding: 24px; width: 500px;
     max-width: 100%; max-height: 85vh; overflow-y: auto;
@@ -539,6 +547,7 @@
   <button class="theme-toggle" id="theme-toggle" title="切换日间/夜间模式">
     <span class="toggle-icon">&#9788;</span> <span id="theme-label">日间</span>
   </button>
+  <button class="theme-toggle" id="btn-backup" title="数据备份与恢复">&#128190; 备份</button>
 </nav>
 
 <div class="main-wrap">
@@ -746,6 +755,7 @@
     <button class="mb-btn active" data-mb="materials"><span class="mb-icon">&#9776;</span> 素材</button>
     <button class="mb-btn" data-mb="writer"><span class="mb-icon">&#9998;</span> 写作</button>
     <button class="mb-btn" id="mb-theme-toggle"><span class="mb-icon" id="mb-theme-icon">&#9790;</span> 夜间</button>
+    <button class="mb-btn" id="mb-backup"><span class="mb-icon">&#128190;</span> 备份</button>
   </div>
 </div>
 
@@ -783,6 +793,23 @@
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal" id="modal-container"></div>
 </div>
+
+<!-- ===== 数据备份 / 恢复 ===== -->
+<div class="modal-overlay" id="backup-modal">
+  <div class="modal" style="max-width:420px;">
+    <h3>&#128190; 数据备份与恢复</h3>
+    <p style="font-size:13px;color:var(--text-muted);margin:0 0 16px;line-height:1.6;">
+      把全部素材、书籍、章节与大纲导出成一份 JSON 存到你手机上；需要时再用「恢复」导回来。备份文件只在本机，不会自动上传，请自行妥善保管。
+    </p>
+    <button class="btn primary" id="bk-export" style="width:100%;margin-bottom:10px;">① 导出备份到手机</button>
+    <button class="btn" id="bk-import" style="width:100%;margin-bottom:10px;">② 从备份文件恢复</button>
+    <input type="file" id="bk-file" accept="application/json,.json" style="display:none;">
+    <button class="btn" id="bk-close" style="width:100%;">关闭</button>
+  </div>
+</div>
+
+<!-- 轻提示 -->
+<div class="toast" id="toast"></div>
 
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
@@ -931,6 +958,91 @@ function openModal(title, bodyHtml, onSave) {
 }
 function closeModal() { $('#modal-overlay').classList.remove('open'); }
 
+// ==== 轻提示 ====
+let _toastTimer = null;
+function toast(msg) {
+  const t = $('#toast'); if (!t) return;
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+// ==== 数据备份 / 恢复 ====
+function buildBackup() {
+  const data = {
+    tags: STORE.tags,
+    materials: STORE.materials,
+    books: STORE.books,
+    outlines: STORE.outlines,
+    outline_characters: STORE.outline_characters,
+    outline_plot: STORE.outline_plot,
+    chapters: {},
+    version: parseInt(localStorage.getItem('jw-version') || '0', 10)
+  };
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.indexOf('jw-ch-') === 0) data.chapters[k.substring(6)] = localStorage.getItem(k);
+  }
+  return { _app: '静·写字', _backupVersion: 1, _backupAt: new Date().toISOString(), data };
+}
+function exportBackup() {
+  const payload = buildBackup();
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  a.href = url;
+  a.download = `jing-write-backup-${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  closeBackupModal();
+  toast('备份已导出到下载文件夹 ✦');
+}
+function importBackup(file) {
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const payload = JSON.parse(e.target.result);
+      const d = payload.data || payload;
+      if (!confirm('恢复会用备份覆盖当前全部素材、书籍与章节内容（并同步到云端）。确定继续？')) return;
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf('jw-ch-') === 0) localStorage.removeItem(k);
+      }
+      STORE.tags = d.tags || [];
+      STORE.materials = d.materials || [];
+      STORE.books = d.books || [];
+      STORE.outlines = d.outlines || {};
+      STORE.outline_characters = d.outline_characters || {};
+      STORE.outline_plot = d.outline_plot || {};
+      if (d.chapters) Object.keys(d.chapters).forEach(id => localStorage.setItem('jw-ch-' + id, d.chapters[id]));
+      if (d.version) localStorage.setItem('jw-version', String(d.version));
+      localStorage.setItem('jw-tags', JSON.stringify(STORE.tags));
+      localStorage.setItem('jw-materials', JSON.stringify(STORE.materials));
+      localStorage.setItem('jw-books', JSON.stringify(STORE.books));
+      localStorage.setItem('jw-outlines', JSON.stringify(STORE.outlines));
+      localStorage.setItem('jw-outline-chars', JSON.stringify(STORE.outline_characters));
+      localStorage.setItem('jw-outline-plot', JSON.stringify(STORE.outline_plot));
+      save();
+      toast('恢复完成，正在重新加载…');
+      setTimeout(() => location.reload(), 700);
+    } catch (err) { alert('备份文件解析失败：' + err.message); }
+  };
+  reader.readAsText(file);
+}
+function openBackupModal() { $('#backup-modal') && $('#backup-modal').classList.add('open'); }
+function closeBackupModal() { $('#backup-modal') && $('#backup-modal').classList.remove('open'); }
+function wireBackup() {
+  $('#btn-backup') && $('#btn-backup').addEventListener('click', openBackupModal);
+  $('#mb-backup') && $('#mb-backup').addEventListener('click', openBackupModal);
+  $('#bk-close') && $('#bk-close').addEventListener('click', closeBackupModal);
+  $('#bk-export') && $('#bk-export').addEventListener('click', exportBackup);
+  $('#bk-import') && $('#bk-import').addEventListener('click', () => { const f = $('#bk-file'); if (f) f.click(); });
+  $('#bk-file') && $('#bk-file').addEventListener('change', function() { if (this.files && this.files[0]) importBackup(this.files[0]); this.value = ''; });
+  $('#backup-modal') && ($('#backup-modal').onclick = function(e) { if (e.target === this) closeBackupModal(); });
+}
+wireBackup();
+
 // ==== TABS (desktop) ====
 $$('.top-nav .tab-btn').forEach(b => {
   b.addEventListener('click', () => {
@@ -963,7 +1075,7 @@ function updateMobileBar(tab) {
     refreshBooks();
   }
 }
-$$('.mb-btn').forEach(b => { b.addEventListener('click', () => updateMobileBar(b.dataset.mb)); });
+$$('.mb-btn').forEach(b => { if (b.dataset.mb) b.addEventListener('click', () => updateMobileBar(b.dataset.mb)); });
 
 // ==== MATERIALS ====
 function refreshMaterials() { renderTagList(); renderMaterialCards(); }
